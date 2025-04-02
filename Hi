@@ -2,6 +2,33 @@
 import serial
 import platform
 import struct
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+
+def read_serial_data(ser):
+    """
+    Reads a line from the serial port and tries to parse it as three floats.
+    """
+    try:
+        raw_line = ser.readline()
+        if len(raw_line) >= 12:
+            imu_values = struct.unpack('<3f', raw_line[:12])
+            return imu_values
+    except Exception as e:
+        print("Error parsing binary data:", e)
+    return None
+
+def format_imu_data(value):
+    """
+    Formats the IMU data to the specified output format.
+    """
+    float_val = float(value)
+    if 'e' in value:
+        base, exponent = value.split('e')
+        base = float(base)
+        return f"{base:.2f}"
+    else:
+        return f"{float_val:.2f}"
 
 def main():
     python_version = platform.python_version()[0]
@@ -13,23 +40,37 @@ def main():
     try:
         ser = serial.Serial(port, baudrate, timeout=1)
         print(f"Connected to {port} at {baudrate} baud")
-        
-        while True:
-            raw_line = ser.readline()  # Read a line of data
-            if not raw_line:
-                continue
-            
 
+        fig, ax = plt.subplots()
+        imu_x_data, imu_y_data, imu_z_data = [], [], []
 
-            # Try to parse the first 12 bytes as three floats
-            try:
-                if len(raw_line) >= 12:
-                    # Adjust '<3f' depending on your IMU data format
-                    imu_values = struct.unpack('<3f', raw_line[:12])
-                    print("Parsed IMU Data:", imu_values)
+        def animate(i):
+            imu_values = read_serial_data(ser)
+            if imu_values:
+                formatted_imu_values = [format_imu_data(f"{value:.2e}") for value in imu_values]
+                print("Parsed IMU Data:", formatted_imu_values)
+                imu_x, imu_y, imu_z = map(float, formatted_imu_values)
+                imu_x_data.append(imu_x)
+                imu_y_data.append(imu_y)
+                imu_z_data.append(imu_z)
 
-            except Exception as e:
-                print("Error parsing binary data:", e)
+                if len(imu_x_data) > 100:  # Keep last 100 data points
+                    imu_x_data.pop(0)
+                    imu_y_data.pop(0)
+                    imu_z_data.pop(0)
+
+                ax.clear()
+                ax.plot(imu_x_data, label='IMU X')
+                ax.plot(imu_y_data, label='IMU Y')
+                ax.plot(imu_z_data, label='IMU Z')
+                ax.legend(loc='upper right')
+                ax.set_title('Real-Time IMU Data')
+                ax.set_xlabel('Time')
+                ax.set_ylabel('IMU Values')
+                ax.set_ylim([-10, 10])  # Adjust y-axis range for better visualization
+
+        ani = animation.FuncAnimation(fig, animate, interval=100)
+        plt.show()
 
     except Exception as e:
         print("Error:", e)
