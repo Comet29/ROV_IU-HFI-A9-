@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+import serial
+import platform
+import struct
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+from mpl_toolkits.mplot3d import Axes3D, art3d
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+import numpy as np
+
+def read_serial_data(ser):
+    """
+    Reads a line from the serial port and tries to parse it as three floats.
+    """
+    try:
+        raw_line = ser.readline()
+        if len(raw_line) >= 12:
+            imu_values = struct.unpack('<3f', raw_line[:12])
+            return imu_values
+    except Exception as e:
+        print("Error parsing binary data:", e)
+    return None
+
+def format_imu_data(value):
+    """
+    Formats the IMU data to the specified output format.
+    """
+    float_val = float(value)
+    if 'e' in value:
+        base, exponent = value.split('e')
+        base = float(base)
+        return f"{base:.2f}"
+    else:
+        return f"{float_val:.2f}"
+
+def draw_cylinder(ax, center, radius, height, color='r'):
+    """
+    Draw a cylinder with the given center, radius, and height.
+    """
+    x = np.linspace(center[0] - radius, center[0] + radius, 30)
+    z = np.linspace(center[2], center[2] + height, 2)
+    X, Z = np.meshgrid(x, z)
+    Y = np.sqrt(radius**2 - (X - center[0])**2) + center[1]
+    
+    ax.plot_surface(X, Y, Z, color=color, alpha=0.5)
+    ax.plot_surface(X, -Y + 2*center[1], Z, color=color, alpha=0.5)
+
+def create_3d_model(ax):
+    """
+    Creates a 3D model of a rectangle connected to six cylinders.
+    """
+    # Create the rectangle vertices
+    length, width, height = 10, 20, 10
+    vertices = [
+        [5, 10, 0], [-5, 10, 0], [-5, -10, 0], [5, -10, 0],
+        [5, 10, height], [-5, 10, height], [-5, -10, height], [5, -10, height]
+    ]
+    
+    # Create the sides of the rectangle
+    faces = [
+        [vertices[j] for j in [0, 1, 2, 3]],  # bottom face
+        [vertices[j] for j in [4, 5, 6, 7]],  # top face
+        [vertices[j] for j in [0, 1, 5, 4]],  # front face
+        [vertices[j] for j in [2, 3, 7, 6]],  # back face
+        [vertices[j] for j in [1, 2, 6, 5]],  # left face
+        [vertices[j] for j in [0, 3, 7, 4]]   # right face
+    ]
+
+    ax.add_collection3d(Poly3DCollection(faces, facecolors='cyan', linewidths=1, edgecolors='r', alpha=0.25))
+
+    # Create the cylinders (circles) with diameter 4 and height 10
+    radius = 2
+    cylinder_height = 10
+    cylinders = [
+        ([-5, 10, 0], radius, cylinder_height),  # top-left
+        ([-5, 0, 0], radius, cylinder_height),   # left
+        ([-5, -10, 0], radius, cylinder_height), # bottom-left
+        ([5, 10, 0], radius, cylinder_height),   # top-right
+        ([5, 0, 0], radius, cylinder_height),    # right
+        ([5, -10, 0], radius, cylinder_height)   # bottom-right
+    ]
+    
+    for center, radius, height in cylinders:
+        draw_cylinder(ax, center, radius, height, color='r')
+    
+    # Create the X, Y, Z axes
+    ax.quiver(0, 0, 0, 1, 0, 0, color='r', arrow_length_ratio=0.1)
+    ax.quiver(0, 0, 0, 0, 1, 0, color='g', arrow_length_ratio=0.1)
+    ax.quiver(0, 0, 0, 0, 0, 1, color='b', arrow_length_ratio=0.1)
+    
+    # Set the limits and labels
+    ax.set_xlim([-15, 15])
+    ax.set_ylim([-15, 15])
+    ax.set_zlim([0, 20])
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_zlabel('Z')
+
+def main():
+    python_version = platform.python_version()[0]
+    print("Using Python version:", python_version)
+
+    port = "/dev/ttyUSB0"  # Update if needed
+    baudrate = 921600      # Verify this with your device's documentation
+
+    try:
+        ser = serial.Serial(port, baudrate, timeout=1)
+        print(f"Connected to {port} at {baudrate} baud")
+
+        fig = plt.figure()
+        ax_imu = fig.add_subplot(121)
+        ax_3d = fig.add_subplot(122, projection='3d')
+
+        imu_x_data, imu_y_data, imu_z_data = [], [], []
+
+        def animate(i):
+            imu_values = read_serial_data(ser)
+            if imu_values:
+                formatted_imu_values = [format_imu_data(f"{value:.2e}") for value in imu_values]
+                print("Parsed IMU Data:", formatted_imu_values)
+                imu_x, imu_y, imu_z = map(float, formatted_imu_values)
+                imu_x_data.append(imu_x)
+                imu_y_data.append(imu_y)
+                imu_z_data.append(imu_z)
+
+                if len(imu_x_data) > 100:  # Keep last 100 data points
+                    imu_x_data.pop(0)
+                    imu_y_data.pop(0)
+                    imu_z_data.pop(0)
+
+                ax_imu.clear()
+                ax_imu.plot(imu_x_data, label='IMU X')
+                ax_imu.plot(imu_y_data, label='IMU Y')
+                ax_imu.plot(imu_z_data, label='IMU Z')
+                ax_imu.legend(loc='upper right')
+                ax_imu.set_title('Real-Time IMU Data')
+                ax_imu.set_xlabel('Time')
+                ax_imu.set_ylabel('IMU Values')
+                ax_imu.set_ylim([-10, 10])  # Adjust y-axis range for better visualization
+
+                ax_3d.clear()
+                create_3d_model(ax_3d)
+
+        ani = animation.FuncAnimation(fig, animate, interval=100)
+        plt.show()
+
+    except Exception as e:
+        print("Error:", e)
+    finally:
+        if 'ser' in locals() and ser.is_open:
+            ser.close()
+            print("Serial port closed.")
+
+if __name__ == "__main__":
+    main()
