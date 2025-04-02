@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+import serial
+import platform
+import struct
+
+def main():
+    python_version = platform.python_version()[0]
+    print("Using Python version:", python_version)
+
+    port = "/dev/ttyUSB0"  # Update if needed
+    baudrate = 921600      # Verify this with your device's documentation
+
+    try:
+        ser = serial.Serial(port, baudrate, timeout=1)
+        print(f"Connected to {port} at {baudrate} baud")
+        
+        while True:
+            raw_line = ser.readline()  # Read a line of data
+            if not raw_line:
+                continue
+            
+
+
+            # Try to parse the first 12 bytes as three floats
+            try:
+                if len(raw_line) >= 12:
+                    # Adjust '<3f' depending on your IMU data format
+                    imu_values = struct.unpack('<3f', raw_line[:12])
+                    print("Parsed IMU Data:", imu_values)
+
+            except Exception as e:
+                print("Error parsing binary data:", e)
+
+    except Exception as e:
+        print("Error:", e)
+    finally:
+        if 'ser' in locals() and ser.is_open:
+            ser.close()
+            print("Serial port closed.")
+
+if __name__ == "__main__":
+    main()
