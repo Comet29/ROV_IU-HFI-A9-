@@ -1,229 +1,164 @@
-import sys
+#!/usr/bin/env python3
+import serial
+import platform
+import struct
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+from mpl_toolkits.mplot3d import Axes3D, art3d
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+import numpy as np
 import math
-import random
-from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
-                            QLabel, QGroupBox, QSlider, QPushButton, 
-                            QTextEdit, QComboBox)
-from PyQt5.QtCore import QTimer, Qt, QPointF
-from PyQt5.QtGui import QColor, QPainter, QPen
-from PyQt5.QtChart import QChart, QChartView, QLineSeries
 
-class VirtualROV:
-    def __init__(self):
-        self.sensor_data = {
-            'depth': 0.0,
-            'pitch': 0.0,
-            'roll': 0.0,
-            'yaw': 0.0,
-            'temp': 15.0,
-            'voltage': 24.5
-        }
-        self.thruster_power = [0.0] * 8
-        self.claw_position = 0.0
+def read_serial_data(ser):
+    """
+    Reads a line from the serial port and tries to parse it as three floats.
+    """
+    try:
+        raw_line = ser.readline()
+        if len(raw_line) >= 12:
+            imu_values = struct.unpack('<3f', raw_line[:12])
+            return imu_values
+    except Exception as e:
+        print("Error parsing binary data:", e)
+    return None
 
-    def update_sensors(self):
-        # 模拟传感器数据漂移
-        self.sensor_data['depth'] += random.uniform(-0.1, 0.1)
-        self.sensor_data['pitch'] = math.sin(time.time()/5) * 5
-        self.sensor_data['roll'] = math.cos(time.time()/3) * 3
-        self.sensor_data['yaw'] += random.uniform(-1, 1)
-        self.sensor_data['temp'] += random.uniform(-0.01, 0.01)
-        self.sensor_data['voltage'] -= 0.001
-        
-        # 限制数值范围
-        self.sensor_data['depth'] = max(0, self.sensor_data['depth'])
-        self.sensor_data['voltage'] = max(22.0, self.sensor_data['voltage'])
+def format_imu_data(value):
+    """
+    Formats the IMU data to the specified output format.
+    """
+    float_val = float(value)
+    if 'e' in value:
+        base, exponent = value.split('e')
+        base = float(base)
+        return f"{base:.2f}"
+    else:
+        return f"{float_val:.2f}"
 
-class ROVSimulatorUI(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.rov = VirtualROV()
-        self.init_ui()
-        self.setup_simulation()
+def draw_cylinder(ax, center, radius, height, color='r'):
+    """
+    Draw a cylinder with the given center, radius, and height.
+    """
+    x = np.linspace(center[0] - radius, center[0] + radius, 30)
+    z = np.linspace(center[2], center[2] + height, 2)
+    X, Z = np.meshgrid(x, z)
+    Y = np.sqrt(radius**2 - (X - center[0])**2) + center[1]
+    
+    ax.plot_surface(X, Y, Z, color=color, alpha=0.5)
+    ax.plot_surface(X, -Y + 2*center[1], Z, color=color, alpha=0.5)
 
-    def init_ui(self):
-        self.setWindowTitle("水下ROV模拟控制平台")
-        self.setGeometry(100, 100, 1280, 720)
-        
-        main_layout = QHBoxLayout()
-        
-        # 左侧控制面板
-        control_panel = QVBoxLayout()
-        control_panel.addWidget(self.create_thruster_control())
-        control_panel.addWidget(self.create_claw_control())
-        control_panel.addWidget(self.create_system_controls())
-        
-        # 右侧显示面板
-        display_panel = QVBoxLayout()
-        display_panel.addWidget(self.create_3d_viewport())
-        display_panel.addWidget(self.create_sensor_displays())
-        display_panel.addWidget(self.create_data_chart())
-        
-        main_layout.addLayout(control_panel, stretch=3)
-        main_layout.addLayout(display_panel, stretch=7)
-        self.setLayout(main_layout)
+def create_3d_model(ax, imu_x=0, imu_y=0, imu_z=0):
+    """
+    Creates a 3D model of a rectangle connected to six cylinders and moves it based on IMU values.
+    """
+    # Create the rectangle vertices
+    length, width, height = 10, 20, 10
+    vertices = [
+        [5 + imu_x, 10 + imu_y, 0 + imu_z], [-5 + imu_x, 10 + imu_y, 0 + imu_z], 
+        [-5 + imu_x, -10 + imu_y, 0 + imu_z], [5 + imu_x, -10 + imu_y, 0 + imu_z],
+        [5 + imu_x, 10 + imu_y, height + imu_z], [-5 + imu_x, 10 + imu_y, height + imu_z], 
+        [-5 + imu_x, -10 + imu_y, height + imu_z], [5 + imu_x, -10 + imu_y, height + imu_z]
+    ]
+    
+    # Create the sides of the rectangle
+    faces = [
+        [vertices[j] for j in [0, 1, 2, 3]],  # bottom face
+        [vertices[j] for j in [4, 5, 6, 7]],  # top face
+        [vertices[j] for j in [0, 1, 5, 4]],  # front face
+        [vertices[j] for j in [2, 3, 7, 6]],  # back face
+        [vertices[j] for j in [1, 2, 6, 5]],  # left face
+        [vertices[j] for j in [0, 3, 7, 4]]   # right face
+    ]
 
-    def create_thruster_control(self):
-        group = QGroupBox("推进器控制")
-        layout = QGridLayout()
-        
-        self.thruster_sliders = []
-        for i in range(4):
-            slider = QSlider(Qt.Vertical)
-            slider.setRange(-100, 100)
-            slider.setValue(0)
-            slider.valueChanged.connect(
-                lambda v, idx=i: self.update_thruster(idx, v/100))
-            layout.addWidget(QLabel(f"推进器 {i+1}"), 0, i)
-            layout.addWidget(slider, 1, i)
-            self.thruster_sliders.append(slider)
-            
-        group.setLayout(layout)
-        return group
+    ax.add_collection3d(Poly3DCollection(faces, facecolors='cyan', linewidths=1, edgecolors='r', alpha=0.25))
 
-    def create_claw_control(self):
-        group = QGroupBox("机械爪控制")
-        layout = QHBoxLayout()
-        
-        self.claw_slider = QSlider(Qt.Horizontal)
-        self.claw_slider.setRange(0, 100)
-        self.claw_slider.valueChanged.connect(
-            lambda v: self.update_claw(v/100))
-        layout.addWidget(QLabel("开合度"))
-        layout.addWidget(self.claw_slider)
-        
-        group.setLayout(layout)
-        return group
+    # Create the cylinders (circles) with diameter 4 and height 10
+    radius = 2
+    cylinder_height = 10
+    cylinders = [
+        ([-5 + imu_x, 10 + imu_y, 0 + imu_z], radius, cylinder_height),  # top-left
+        ([-5 + imu_x, 0 + imu_y, 0 + imu_z], radius, cylinder_height),   # left
+        ([-5 + imu_x, -10 + imu_y, 0 + imu_z], radius, cylinder_height), # bottom-left
+        ([5 + imu_x, 10 + imu_y, 0 + imu_z], radius, cylinder_height),   # top-right
+        ([5 + imu_x, 0 + imu_y, 0 + imu_z], radius, cylinder_height),    # right
+        ([5 + imu_x, -10 + imu_y, 0 + imu_z], radius, cylinder_height)   # bottom-right
+    ]
+    
+    for center, radius, height in cylinders:
+        draw_cylinder(ax, center, radius, height, color='r')
+    
+    # Create the X, Y, Z axes
+    ax.quiver(0, 0, 0, 1, 0, 0, color='r', arrow_length_ratio=0.1)
+    ax.quiver(0, 0, 0, 0, 1, 0, color='g', arrow_length_ratio=0.1)
+    ax.quiver(0, 0, 0, 0, 0, 1, color='b', arrow_length_ratio=0.1)
+    
+    # Set the limits and labels
+    ax.set_xlim([-15, 15])
+    ax.set_ylim([-15, 15])
+    ax.set_zlim([0, 20])
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_zlabel('Z')
 
-    def create_3d_viewport(self):
-        class Viewport3D(QWidget):
-            def paintEvent(self, event):
-                painter = QPainter(self)
-                painter.setRenderHint(QPainter.Antialiasing)
+def main():
+    python_version = platform.python_version()[0]
+    print("Using Python version:", python_version)
+
+    port = "/dev/ttyUSB0"  # Update if needed
+    baudrate = 921600      # Verify this with your device's documentation
+
+    try:
+        ser = serial.Serial(port, baudrate, timeout=1)
+        print(f"Connected to {port} at {baudrate} baud")
+
+        fig = plt.figure()
+        ax_imu = fig.add_subplot(121)
+        ax_3d = fig.add_subplot(122, projection='3d')
+
+        imu_x_data, imu_y_data, imu_z_data = [], [], []
+
+        def animate(i):
+            imu_values = read_serial_data(ser)
+            if imu_values:
+                formatted_imu_values = [format_imu_data(f"{value:.2e}") for value in imu_values]
+                print("Parsed IMU Data:", formatted_imu_values)
+                imu_x, imu_y, imu_z = map(float, formatted_imu_values)
                 
-                # 绘制ROV简化模型
-                center = self.rect().center()
-                size = min(self.width(), self.height()) * 0.4
-                
-                # 主体
-                painter.setBrush(QColor(30, 144, 255))
-                painter.drawEllipse(center, int(size*0.8), int(size*0.3))
-                
-                # 推进器
-                painter.setBrush(QColor(105, 105, 105))
-                for i in range(4):
-                    angle = i * 90 - 45
-                    x = center.x() + math.cos(math.radians(angle)) * size*0.7
-                    y = center.y() + math.sin(math.radians(angle)) * size*0.7
-                    painter.drawEllipse(QPointF(x, y), 10, 10)
-                
-                # 机械爪
-                painter.setPen(QPen(Qt.green, 3))
-                claw_pos = self.parent().rov.claw_position
-                left = center.x() - size*0.6 + size*1.2 * claw_pos
-                right = center.x() + size*0.6 - size*1.2 * claw_pos
-                painter.drawLine(left, center.y()+size*0.4, 
-                               center.x(), center.y()+size*0.4)
-                painter.drawLine(right, center.y()+size*0.4,
-                               center.x(), center.y()+size*0.4)
+                # Check for nan values
+                imu_x = 0 if math.isnan(imu_x) else imu_x
+                imu_y = 0 if math.isnan(imu_y) else imu_y
+                imu_z = 0 if math.isnan(imu_z) else imu_z
 
-        viewport = Viewport3D()
-        viewport.setMinimumSize(400, 300)
-        return viewport
+                imu_x_data.append(imu_x)
+                imu_y_data.append(imu_y)
+                imu_z_data.append(imu_z)
 
-    def create_sensor_displays(self):
-        group = QGroupBox("传感器数据")
-        layout = QGridLayout()
-        
-        self.sensor_labels = {
-            'depth': QLabel("0.00 m"),
-            'pitch': QLabel("0.0°"),
-            'roll': QLabel("0.0°"),
-            'temp': QLabel("15.0°C"),
-            'voltage': QLabel("24.5 V")
-        }
-        
-        layout.addWidget(QLabel("深度"), 0, 0)
-        layout.addWidget(self.sensor_labels['depth'], 0, 1)
-        layout.addWidget(QLabel("俯仰角"), 1, 0)
-        layout.addWidget(self.sensor_labels['pitch'], 1, 1)
-        layout.addWidget(QLabel("横滚角"), 2, 0)
-        layout.addWidget(self.sensor_labels['roll'], 2, 1)
-        layout.addWidget(QLabel("温度"), 3, 0)
-        layout.addWidget(self.sensor_labels['temp'], 3, 1)
-        layout.addWidget(QLabel("电压"), 4, 0)
-        layout.addWidget(self.sensor_labels['voltage'], 4, 1)
-        
-        group.setLayout(layout)
-        return group
+                if len(imu_x_data) > 100:  # Keep last 100 data points
+                    imu_x_data.pop(0)
+                    imu_y_data.pop(0)
+                    imu_z_data.pop(0)
 
-    def create_data_chart(self):
-        chart = QChart()
-        series = QLineSeries()
-        chart.addSeries(series)
-        chart.createDefaultAxes()
-        chart.setTitle("深度变化曲线")
-        
-        chart_view = QChartView(chart)
-        chart_view.setRenderHint(QPainter.Antialiasing)
-        return chart_view
+                ax_imu.clear()
+                ax_imu.plot(imu_x_data, label='IMU X')
+                ax_imu.plot(imu_y_data, label='IMU Y')
+                ax_imu.plot(imu_z_data, label='IMU Z')
+                ax_imu.legend(loc='upper right')
+                ax_imu.set_title('Real-Time IMU Data')
+                ax_imu.set_xlabel('Time')
+                ax_imu.set_ylabel('IMU Values')
+                ax_imu.set_ylim([-10, 10])  # Adjust y-axis range for better visualization
 
-    def create_system_controls(self):
-        group = QGroupBox("系统控制")
-        layout = QHBoxLayout()
-        
-        self.mode_selector = QComboBox()
-        self.mode_selector.addItems(["手动模式", "深度保持", "自动巡航"])
-        layout.addWidget(self.mode_selector)
-        
-        emergency_btn = QPushButton("紧急上浮")
-        emergency_btn.setStyleSheet("background-color: red; color: white;")
-        emergency_btn.clicked.connect(self.emergency_surface)
-        layout.addWidget(emergency_btn)
-        
-        group.setLayout(layout)
-        return group
+                ax_3d.clear()
+                create_3d_model(ax_3d, imu_x, imu_y, imu_z)
 
-    def setup_simulation(self):
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.update_simulation)
-        self.timer.start(100)  # 10Hz更新
+        ani = animation.FuncAnimation(fig, animate, interval=100)
+        plt.show()
 
-    def update_simulation(self):
-        self.rov.update_sensors()
-        
-        # 更新传感器显示
-        self.sensor_labels['depth'].setText(f"{self.rov.sensor_data['depth']:.2f} m")
-        self.sensor_labels['pitch'].setText(f"{self.rov.sensor_data['pitch']:.1f}°")
-        self.sensor_labels['roll'].setText(f"{self.rov.sensor_data['roll']:.1f}°")
-        self.sensor_labels['temp'].setText(f"{self.rov.sensor_data['temp']:.1f}°C")
-        self.sensor_labels['voltage'].setText(f"{self.rov.sensor_data['voltage']:.1f} V")
-        
-        # 更新3D显示
-        self.findChild(QWidget).update()
-        
-        # 更新图表数据
-        series = self.findChild(QChartView).chart().series()[0]
-        if series.count() > 60:  # 保持60个数据点
-            series.remove(0)
-        series.append(series.count(), self.rov.sensor_data['depth'])
+    except Exception as e:
+        print("Error:", e)
+    finally:
+        if 'ser' in locals() and ser.is_open:
+            ser.close()
+            print("Serial port closed.")
 
-    def update_thruster(self, index, power):
-        self.rov.thruster_power[index] = power
-        print(f"推进器{index+1} 功率: {power*100:.0f}%")
-
-    def update_claw(self, position):
-        self.rov.claw_position = position
-        print(f"机械爪开合度: {position*100:.0f}%")
-
-    def emergency_surface(self):
-        print("执行紧急上浮程序!")
-        for slider in self.thruster_sliders:
-            slider.setValue(0)
-        self.claw_slider.setValue(0)
-
-if __name__ == '__main__':
-    app = QApplication(sys.argv)
-    window = ROVSimulatorUI()
-    window.show()
-    sys.exit(app.exec_())
+if __name__ == "__main__":
+    main()
