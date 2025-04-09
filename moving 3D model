@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+# -*- coding:utf-8 -*-
+import serial
+import struct
+import platform
+import serial.tools.list_ports
+import math
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+import numpy as np
+from matplotlib.animation import FuncAnimation
+
+# Global variables for IMU data
+key = 0
+buff = {}
+angularVelocity = [0, 0, 0]
+acceleration = [0, 0, 0]
+magnetometer = [0, 0, 0]
+angle_degree = [0, 0, 0]
+pub_flag = [True, True]
+python_version = platform.python_version()[0]
+
+# 3D Model parameters
+model_rotation = [0, 0, 0]  # Current rotation angles in degrees
+
+def find_ttyUSB():
+    print('imu 默认串口为 /dev/ttyUSB0, 若识别多个串口设备, 请在 launch 文件中修改 imu 对应的串口')
+    posts = [port.device for port in serial.tools.list_ports.comports() if 'USB' in port.device]
+    print('当前电脑所连接的 {} 串口设备共 {} 个: {}'.format('USB', len(posts), posts))
+
+def checkSum(list_data, check_data):
+    data = bytearray(list_data)
+    crc = 0xFFFF
+    for pos in data:
+        crc ^= pos
+        for i in range(8):
+            if (crc & 1) != 0:
+                crc >>= 1
+                crc ^= 0xA001
+            else:
+                crc >>= 1
+    return hex(((crc & 0xff) << 8) + (crc >> 8)) == hex(check_data[0] << 8 | check_data[1])
+
+def hex_to_ieee(raw_data):
+    ieee_data = []
+    raw_data.reverse()
+    for i in range(0, len(raw_data), 4):
+        data2str = hex(raw_data[i] | 0xff00)[4:6] + hex(raw_data[i + 1] | 0xff00)[4:6] + hex(raw_data[i + 2] | 0xff00)[4:6] + hex(raw_data[i + 3] | 0xff00)[4:6]
+        ieee_data.append(struct.unpack('>f', bytes.fromhex(data2str))[0])
+    ieee_data.reverse()
+    return ieee_data
+
+def handleSerialData(raw_data):
+    global buff, key, angle_degree, magnetometer, acceleration, angularVelocity, pub_flag
+    
+    if python_version == '3':
+        buff[key] = raw_data
+
+    key += 1
+    if buff[0] != 0xaa:
+        key = 0
+        return
+    if key < 3:
+        return
+    if buff[1] != 0x55:
+        key = 0
+        return
+    if key < buff[2] + 5:
+        return
+
+    else:
+        data_buff = list(buff.values())
+
+        if buff[2] == 0x2c and pub_flag[0]:
+            if checkSum(data_buff[2:47], data_buff[47:49]):
+                data = hex_to_ieee(data_buff[7:47])
+                angularVelocity = data[1:4]
+                acceleration = data[4:7]
+                magnetometer = data[7:10]
+            else:
+                print('校验失败')
+            pub_flag[0] = False
+        elif buff[2] == 0x14 and pub_flag[1]:
+            if checkSum(data_buff[2:23], data_buff[23:25]):
+                data = hex_to_ieee(data_buff[7:23])
+                angle_degree = data[1:4]
+            else:
+                print('校验失败')
+            pub_flag[1] = False
+        else:
+            print("该数据处理类没有提供该 " + str(buff[2]) + " 的解析")
+            print("或数据错误")
+            buff = {}
+            key = 0
+
+        buff = {}
+        key = 0
+        if pub_flag[0] == True or pub_flag[1] == True:
+            return
+        pub_flag[0] = pub_flag[1] = True
+
+def draw_cylinder(ax, center, radius, height, color='r'):
+    x = np.linspace(center[0] - radius, center[0] + radius, 30)
+    z = np.linspace(center[2], center[2] + height, 2)
+    X, Z = np.meshgrid(x, z)
+    Y = np.sqrt(radius**2 - (X - center[0])**2) + center[1]
+    
+    ax.plot_surface(X, Y, Z, color=color, alpha=0.5)
+    ax.plot_surface(X, -Y + 2*center[1], Z, color=color, alpha=0.5)
+
+def create_3d_model(ax):
+    # Create rotation matrix from current angles
+    angles_rad = np.radians(model_rotation)
+    rx = angles_rad[0]
+    ry = angles_rad[1]
+    rz = angles_rad[2]
+    
+    # Rotation matrices
+    rot_x = np.array([[1, 0, 0],
+                     [0, np.cos(rx), -np.sin(rx)],
+                     [0, np.sin(rx), np.cos(rx)]])
+    
+    rot_y = np.array([[np.cos(ry), 0, np.sin(ry)],
+                     [0, 1, 0],
+                     [-np.sin(ry), 0, np.cos(ry)]])
+    
+    rot_z = np.array([[np.cos(rz), -np.sin(rz), 0],
+                     [np.sin(rz), np.cos(rz), 0],
+                     [0, 0, 1]])
+    
+    # Combined rotation
+    rotation_matrix = rot_z @ rot_y @ rot_x
+
+    # Create the rectangle vertices
+    length, width, height = 10, 20, 10
+    vertices = np.array([
+        [5, 10, 0], [-5, 10, 0], [-5, -10, 0], [5, -10, 0],
+        [5, 10, height], [-5, 10, height], [-5, -10, height], [5, -10, height]
+    ])
+    
+    # Apply rotation
+    rotated_vertices = np.dot(vertices, rotation_matrix.T)
+    
+    # Create the sides of the rectangle
+    faces = [
+        [rotated_vertices[j] for j in [0, 1, 2, 3]],  # bottom face
+        [rotated_vertices[j] for j in [4, 5, 6, 7]],  # top face
+        [rotated_vertices[j] for j in [0, 1, 5, 4]],  # front face
+        [rotated_vertices[j] for j in [2, 3, 7, 6]],  # back face
+        [rotated_vertices[j] for j in [1, 2, 6, 5]],  # left face
+        [rotated_vertices[j] for j in [0, 3, 7, 4]]   # right face
+    ]
+
+    ax.add_collection3d(Poly3DCollection(faces, facecolors='cyan', linewidths=1, edgecolors='r', alpha=0.25))
+
+    # Create the cylinders (circles) with diameter 4 and height 10
+    radius = 2
+    cylinder_height = 10
+    cylinders = [
+        ([-5, 10, 0], radius, cylinder_height),  # top-left
+        ([-5, 0, 0], radius, cylinder_height),   # left
+        ([-5, -10, 0], radius, cylinder_height), # bottom-left
+        ([5, 10, 0], radius, cylinder_height),   # top-right
+        ([5, 0, 0], radius, cylinder_height),    # right
+        ([5, -10, 0], radius, cylinder_height)   # bottom-right
+    ]
+    
+    for center, radius, height in cylinders:
+        # Apply rotation to cylinder centers
+        rotated_center = np.dot(center, rotation_matrix.T)
+        draw_cylinder(ax, rotated_center, radius, height, color='r')
+    
+    # Create the X, Y, Z axes (rotated)
+    axis_length = 15
+    axes = np.array([[axis_length, 0, 0], [0, axis_length, 0], [0, 0, axis_length]])
+    rotated_axes = np.dot(axes, rotation_matrix.T)
+    
+    ax.quiver(0, 0, 0, rotated_axes[0,0], rotated_axes[0,1], rotated_axes[0,2], color='r', arrow_length_ratio=0.1)
+    ax.quiver(0, 0, 0, rotated_axes[1,0], rotated_axes[1,1], rotated_axes[1,2], color='g', arrow_length_ratio=0.1)
+    ax.quiver(0, 0, 0, rotated_axes[2,0], rotated_axes[2,1], rotated_axes[2,2], color='b', arrow_length_ratio=0.1)
+    
+    # Set the limits and labels
+    ax.set_xlim([-20, 20])
+    ax.set_ylim([-20, 20])
+    ax.set_zlim([-10, 30])
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_zlabel('Z')
+    ax.set_title('IMU 3D Model (角速度控制)')
+
+def update_rotation():
+    global model_rotation, angularVelocity
+    # Update rotation based on angular velocity (scaled for visualization)
+    rotation_speed = 2.0  # Scaling factor for better visualization
+    model_rotation[0] += angularVelocity[0] * rotation_speed
+    model_rotation[1] += angularVelocity[1] * rotation_speed
+    model_rotation[2] += angularVelocity[2] * rotation_speed
+
+def update_plot(frame, hf_imu, ax):
+    # Read IMU data
+    try:
+        buff_count = hf_imu.inWaiting()
+        if buff_count > 0:
+            buff_data = hf_imu.read(buff_count)
+            for i in range(0, buff_count):
+                handleSerialData(buff_data[i])
+    except Exception as e:
+        print("IMU 读取错误:", e)
+        return
+    
+    # Update model rotation based on angular velocity
+    update_rotation()
+    
+    # Clear and redraw the 3D model
+    ax.clear()
+    create_3d_model(ax)
+    
+    # Print current rotation angles
+    print(f"当前模型旋转角度 (X,Y,Z): {model_rotation[0]:.1f}, {model_rotation[1]:.1f}, {model_rotation[2]:.1f}")
+
+def main():
+    global model_rotation
+    
+    find_ttyUSB()
+    port = "/dev/ttyUSB0"
+    baudrate = 921600
+
+    try:
+        hf_imu = serial.Serial(port=port, baudrate=baudrate, timeout=0.5)
+        if hf_imu.isOpen():
+            print("\033[32m串口打开成功...\033[0m")
+        else:
+            hf_imu.open()
+            print("\033[32m打开串口成功...\033[0m")
+    except Exception as e:
+        print(e)
+        print("\033[31m串口打开失败\033[0m")
+        exit(0)
+
+    # Set up the 3D plot
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Start animation
+    ani = FuncAnimation(fig, update_plot, fargs=(hf_imu, ax), interval=50)
+    plt.show()
+
+    hf_imu.close()
+
+if __name__ == "__main__":
+    main()
