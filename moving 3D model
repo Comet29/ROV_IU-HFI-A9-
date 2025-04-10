@@ -112,8 +112,8 @@ def draw_cylinder(ax, center, radius, height, color='r'):
 def create_3d_model(ax):
     # Create rotation matrix from current angles
     angles_rad = np.radians(model_rotation)
-    rx = angles_rad[1]
-    ry = angles_rad[0]
+    rx = angles_rad[0]
+    ry = angles_rad[1]
     rz = angles_rad[2]
     
     # Rotation matrices
@@ -184,17 +184,17 @@ def create_3d_model(ax):
     ax.set_xlim([-20, 20])
     ax.set_ylim([-20, 20])
     ax.set_zlim([-10, 30])
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
+    ax.set_xlabel('pitch')
+    ax.set_ylabel('roll')
+    ax.set_zlabel('yaw')
     ax.set_title('IMU 3D Model')
 
 def update_model_rotation():
     global model_rotation, angle_degree
     # Use the IMU-provided Euler angles directly
-    model_rotation[0] = angle_degree[0]
-    model_rotation[1] = angle_degree[1]
-    model_rotation[2] = angle_degree[2]
+    model_rotation[0] = angle_degree[1]
+    model_rotation[1] = -angle_degree[0]
+    model_rotation[2] = -angle_degree[2]
 
 def update_plot(frame, hf_imu, ax):
     # Read IMU data
@@ -216,13 +216,13 @@ def update_plot(frame, hf_imu, ax):
     create_3d_model(ax)
     
     # Print current rotation angles
-    print(f"当前模型旋转角度 (X,Y,Z): {model_rotation[0]:.1f}, {model_rotation[1]:.1f}, {model_rotation[2]:.1f}")
+    print(f"歐拉角 (roll,pitch,yaw): {model_rotation[0]:.1f}, {model_rotation[1]:.1f}, {model_rotation[2]:.1f}")
 
 def main():
     global model_rotation
     
     find_ttyUSB()
-    port = "/dev/ttyUSB0"
+    port = "com7"
     baudrate = 921600
 
     try:
