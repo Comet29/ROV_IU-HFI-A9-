@@ -31,6 +31,14 @@ angle_history = {
     "time": []
 }
 
+global acc_history
+acc_history = {
+    "acc x": [],
+    "acc y": [],
+    "acc z": [],
+    "time_acc": []
+}
+
 def find_ttyUSB():
     print('imu 默认串口为 /dev/ttyUSB0, 若识别多个串口设备, 请在 launch 文件中修改 imu 对应的串口')
     posts = [port.device for port in serial.tools.list_ports.comports() if 'USB' in port.device]
@@ -59,7 +67,7 @@ def hex_to_ieee(raw_data):
     return ieee_data
 
 def handleSerialData(raw_data):
-    global buff, key, angle_degree, magnetometer, acceleration, angularVelocity, pub_flag, text_box
+    global buff, key, angle_degree, magnetometer, acceleration, angularVelocity, pub_flag, text_box, acc_norm
 
     if python_version == '3':
         buff[key] = raw_data
@@ -179,16 +187,16 @@ def create_3d_model(ax):
     axes = np.array([[axis_length, 0, 0], [0, axis_length, 0], [0, 0, axis_length]])
     rotated_axes = np.dot(axes, rotation_matrix.T)
 
-    ax.quiver(0, 0, 0, rotated_axes[0,0], rotated_axes[0,1], rotated_axes[0,2], color='r', arrow_length_ratio=0.1)
-    ax.quiver(0, 0, 0, rotated_axes[1,0], rotated_axes[1,1], rotated_axes[1,2], color='g', arrow_length_ratio=0.1)
+    ax.quiver(0, 0, 0, -rotated_axes[0,0], -rotated_axes[0,1], -rotated_axes[0,2], color='r', arrow_length_ratio=0.1)
+    ax.quiver(0, 0, 0, -rotated_axes[1,0], -rotated_axes[1,1], -rotated_axes[1,2], color='g', arrow_length_ratio=0.1)
     ax.quiver(0, 0, 0, rotated_axes[2,0], rotated_axes[2,1], rotated_axes[2,2], color='b', arrow_length_ratio=0.1)
 
     ax.set_xlim([-20, 20])
     ax.set_ylim([-20, 20])
     ax.set_zlim([-10, 30])
-    ax.set_xlabel('roll ')
-    ax.set_ylabel('pitch')
-    ax.set_zlabel('yaw')
+    ax.set_xlabel('pitch')
+    ax.set_ylabel('yaw')
+    ax.set_zlabel('roll')
     ax.set_title('IMU 3D Model')
 
 def update_model_rotation():
@@ -202,6 +210,11 @@ def update_model_rotation():
     angle_history["roll"].append(angle_degree[0])
     angle_history["yaw"].append(angle_degree[2])
     angle_history["time"].append(len(angle_history["time"]))
+    
+    acc_history["acc x"].append(acc_norm[0])
+    acc_history["acc y"].append(acc_norm[1])
+    acc_history["acc z"].append(acc_norm[2])
+    acc_history["time_acc"].append(len(acc_history["time_acc"]))
 
 def create_data_display(ax):
     # Create an empty text box
@@ -232,7 +245,7 @@ def update_data_display(text_box):
         )
         text_box.set_text(text)
 
-def update_plot(frame, hf_imu, ax_3d, ax_plot, ax_data, text_box):
+def update_plot(frame, hf_imu, ax_3d, ax_euler, ax_acc, ax_data, text_box):
     try:
         buff_count = hf_imu.inWaiting()
         if buff_count > 0:
@@ -247,20 +260,34 @@ def update_plot(frame, hf_imu, ax_3d, ax_plot, ax_data, text_box):
     ax_3d.clear()
     create_3d_model(ax_3d)
 
-    ax_plot.clear()
+    # Update Euler angle plot
+    ax_euler.clear()
     window = 50
-    ax_plot.plot(angle_history["time"][-window:], angle_history["pitch"][-window:], label="Pitch", color="blue")
-    ax_plot.plot(angle_history["time"][-window:], angle_history["roll"][-window:], label="Roll", color="green")
-    ax_plot.plot(angle_history["time"][-window:], angle_history["yaw"][-window:], label="Yaw", color="red")
+    ax_euler.plot(angle_history["time"][-window:], angle_history["pitch"][-window:], label="Pitch", color="blue")
+    ax_euler.plot(angle_history["time"][-window:], angle_history["roll"][-window:], label="Roll", color="green")
+    ax_euler.plot(angle_history["time"][-window:], angle_history["yaw"][-window:], label="Yaw", color="red")
 
-    ax_plot.set_title("Euler Angles")
-    ax_plot.set_xlabel("Frame")
-    ax_plot.set_ylabel("Angle (degrees)")
-    ax_plot.legend()
-    ax_plot.grid(True)
+    ax_euler.set_title("Euler Angles")
+    ax_euler.set_xlabel("Frame")
+    ax_euler.set_ylabel("Angle (degrees)")
+    ax_euler.legend()
+    ax_euler.grid(True)
+
+    ax_acc.clear()
+    ax_acc.plot(acc_history["time_acc"][-window:], acc_history["acc x"][-window:] , label="Acc X", color="blue")
+    ax_acc.plot(acc_history["time_acc"][-window:], acc_history["acc y"][-window:] , label="Acc Y", color="green")
+    ax_acc.plot(acc_history["time_acc"][-window:], acc_history["acc z"][-window:] , label="Acc Z", color="red")
+
+    ax_acc.set_title("Acceleration")
+    ax_acc.set_xlabel("Frame")
+    ax_acc.set_ylabel("Acceleration (m/s²)")
+    ax_acc.legend()
+    ax_acc.grid(True)
 
     # Update data display
     update_data_display(text_box)
+
+
 
 def main():
     global model_rotation
@@ -281,21 +308,22 @@ def main():
         print("\033[31m串口打开失败\033[0m")
         exit(0)
 
-    # Create figure with 3 subplots
-    fig = plt.figure(figsize=(18, 6))
-    gs = fig.add_gridspec(1, 3, width_ratios=[0.7, 1, 1])  # Adjust ratios for new layout
+    # Create figure with 3 subplots (top for 3D model, bottom for Euler angles and Acceleration)
+    fig = plt.figure(figsize=(18, 8))  # Increased figure height for better spacing
+    gs = fig.add_gridspec(2, 2, height_ratios=[2, 1], width_ratios=[1, 1])  # 2x2 layout
     
-    ax_data = fig.add_subplot(gs[0])  # IMU data display on the left
-    ax_plot = fig.add_subplot(gs[1])  # Euler angle plots in the center
-    ax_3d = fig.add_subplot(gs[2], projection='3d')  # 3D model on the right
+    ax_3d = fig.add_subplot(gs[0, :], projection='3d')  # 3D model on top (spanning both columns)
+    ax_acc = fig.add_subplot(gs[1, 0])    # Acceleration plot on the bottom-left
+    ax_euler = fig.add_subplot(gs[1, 1])  # Euler angle plot on the bottom-right
     
-    # Create data display area
+    # Create data display area (optional text box)
+    ax_data = fig.add_subplot(111, frameon=False)  # Invisible subplot for the text box
     text_box = create_data_display(ax_data)
     
     # Adjust layout
     plt.tight_layout()
     
-    ani = FuncAnimation(fig, update_plot, fargs=(hf_imu, ax_3d, ax_plot, ax_data, text_box), interval=50)
+    ani = FuncAnimation(fig, update_plot, fargs=(hf_imu, ax_3d, ax_euler, ax_acc, ax_data, text_box), interval=50)
     plt.show()
 
     hf_imu.close()
