@@ -22,7 +22,8 @@ python_version = platform.python_version()[0]
 # 3D Model parameters
 model_rotation = [0, 0, 0]  # Current rotation angles in degrees
 
-# 儲存角度的歷史資料
+# Store full history of angles
+global angle_history
 angle_history = {
     "pitch": [],
     "roll": [],
@@ -34,7 +35,7 @@ def find_ttyUSB():
     print('imu 默认串口为 /dev/ttyUSB0, 若识别多个串口设备, 请在 launch 文件中修改 imu 对应的串口')
     posts = [port.device for port in serial.tools.list_ports.comports() if 'USB' in port.device]
     print('当前电脑所连接的 {} 串口设备共 {} 个: {}'.format('USB', len(posts), posts))
-
+    
 def checkSum(list_data, check_data):
     data = bytearray(list_data)
     crc = 0xFFFF
@@ -59,7 +60,7 @@ def hex_to_ieee(raw_data):
 
 def handleSerialData(raw_data):
     global buff, key, angle_degree, magnetometer, acceleration, angularVelocity, pub_flag
-    
+
     if python_version == '3':
         buff[key] = raw_data
 
@@ -111,84 +112,60 @@ def draw_cylinder(ax, center, radius, height, color='r'):
     z = np.linspace(center[2], center[2] + height, 2)
     X, Z = np.meshgrid(x, z)
     diff = radius**2 - (X - center[0])**2
-    diff = np.maximum(0, diff)  # Ensure non-negative values
+    diff = np.maximum(0, diff)
     Y = np.sqrt(diff) + center[1]
-    
+
     ax.plot_surface(X, Y, Z, color=color, alpha=0.5)
     ax.plot_surface(X, -Y + 2*center[1], Z, color=color, alpha=0.5)
 
 def create_3d_model(ax):
-    # Create rotation matrix from current angles
     angles_rad = np.radians(model_rotation)
-    rx = angles_rad[0]
-    ry = angles_rad[1]
-    rz = angles_rad[2]
-    
-    # Rotation matrices
-    rot_x = np.array([[1, 0, 0],
-                     [0, np.cos(rx), -np.sin(rx)],
-                     [0, np.sin(rx), np.cos(rx)]])
-    
-    rot_y = np.array([[np.cos(ry), 0, np.sin(ry)],
-                     [0, 1, 0],
-                     [-np.sin(ry), 0, np.cos(ry)]])
-    
-    rot_z = np.array([[np.cos(rz), -np.sin(rz), 0],
-                     [np.sin(rz), np.cos(rz), 0],
-                     [0, 0, 1]])
-    
-    # Combined rotation
+    rx, ry, rz = angles_rad
+
+    rot_x = np.array([[1, 0, 0], [0, np.cos(rx), -np.sin(rx)], [0, np.sin(rx), np.cos(rx)]])
+    rot_y = np.array([[np.cos(ry), 0, np.sin(ry)], [0, 1, 0], [-np.sin(ry), 0, np.cos(ry)]])
+    rot_z = np.array([[np.cos(rz), -np.sin(rz), 0], [np.sin(rz), np.cos(rz), 0], [0, 0, 1]])
     rotation_matrix = rot_z @ rot_y @ rot_x
 
-    # Create the rectangle vertices
     length, width, height = 10, 20, 10
     vertices = np.array([
         [5, 10, 0], [-5, 10, 0], [-5, -10, 0], [5, -10, 0],
         [5, 10, height], [-5, 10, height], [-5, -10, height], [5, -10, height]
     ])
-    
-    # Apply rotation
     rotated_vertices = np.dot(vertices, rotation_matrix.T)
-    
-    # Create the sides of the rectangle
+
     faces = [
-        [rotated_vertices[j] for j in [0, 1, 2, 3]],  # bottom face
-        [rotated_vertices[j] for j in [4, 5, 6, 7]],  # top face
-        [rotated_vertices[j] for j in [0, 1, 5, 4]],  # front face
-        [rotated_vertices[j] for j in [2, 3, 7, 6]],  # back face
-        [rotated_vertices[j] for j in [1, 2, 6, 5]],  # left face
-        [rotated_vertices[j] for j in [0, 3, 7, 4]]   # right face
+        [rotated_vertices[j] for j in [0, 1, 2, 3]],
+        [rotated_vertices[j] for j in [4, 5, 6, 7]],
+        [rotated_vertices[j] for j in [0, 1, 5, 4]],
+        [rotated_vertices[j] for j in [2, 3, 7, 6]],
+        [rotated_vertices[j] for j in [1, 2, 6, 5]],
+        [rotated_vertices[j] for j in [0, 3, 7, 4]]
     ]
 
     ax.add_collection3d(Poly3DCollection(faces, facecolors='cyan', linewidths=1, edgecolors='r', alpha=0.25))
 
-    # Create the cylinders (circles) with diameter 4 and height 10
-    radius = 2
-    cylinder_height = 10
+    radius, cylinder_height = 2, 10
     cylinders = [
-        ([-5, 10, 0], radius, cylinder_height),  # top-left
-        ([-5, 0, 0], radius, cylinder_height),   # left
-        ([-5, -10, 0], radius, cylinder_height), # bottom-left
-        ([5, 10, 0], radius, cylinder_height),   # top-right
-        ([5, 0, 0], radius, cylinder_height),    # right
-        ([5, -10, 0], radius, cylinder_height)   # bottom-right
+        ([-5, 10, 0], radius, cylinder_height),
+        ([-5, 0, 0], radius, cylinder_height),
+        ([-5, -10, 0], radius, cylinder_height),
+        ([5, 10, 0], radius, cylinder_height),
+        ([5, 0, 0], radius, cylinder_height),
+        ([5, -10, 0], radius, cylinder_height)
     ]
-    
     for center, radius, height in cylinders:
-        # Apply rotation to cylinder centers
         rotated_center = np.dot(center, rotation_matrix.T)
         draw_cylinder(ax, rotated_center, radius, height, color='r')
-    
-    # Create the X, Y, Z axes (rotated)
+
     axis_length = 15
     axes = np.array([[axis_length, 0, 0], [0, axis_length, 0], [0, 0, axis_length]])
     rotated_axes = np.dot(axes, rotation_matrix.T)
-    
+
     ax.quiver(0, 0, 0, rotated_axes[0,0], rotated_axes[0,1], rotated_axes[0,2], color='r', arrow_length_ratio=0.1)
     ax.quiver(0, 0, 0, rotated_axes[1,0], rotated_axes[1,1], rotated_axes[1,2], color='g', arrow_length_ratio=0.1)
     ax.quiver(0, 0, 0, rotated_axes[2,0], rotated_axes[2,1], rotated_axes[2,2], color='b', arrow_length_ratio=0.1)
-    
-    # Set the limits and labels
+
     ax.set_xlim([-20, 20])
     ax.set_ylim([-20, 20])
     ax.set_zlim([-10, 30])
@@ -199,25 +176,17 @@ def create_3d_model(ax):
 
 def update_model_rotation():
     global model_rotation, angle_degree
-    # Use the IMU-provided Euler angles directly
-    model_rotation[0] = angle_degree[1] # pitch
-    model_rotation[1] = angle_degree[0]  # roll
-    model_rotation[2] = -angle_degree[2] # yaw
 
-    # 加入角度歷史記錄
+    model_rotation[0] = -angle_degree[1]  # pitch
+    model_rotation[1] = -angle_degree[0]  # roll
+    model_rotation[2] = -angle_degree[2]  # yaw
+
     angle_history["pitch"].append(angle_degree[1])
     angle_history["roll"].append(angle_degree[0])
     angle_history["yaw"].append(angle_degree[2])
     angle_history["time"].append(len(angle_history["time"]))
-    
-    # 限制最多顯示 100 筆
-    max_len = 100
-    for key in angle_history:
-        if len(angle_history[key]) > max_len:
-            angle_history[key] = angle_history[key][-max_len:]
 
 def update_plot(frame, hf_imu, ax_3d, ax_plot):
-    # Read IMU data
     try:
         buff_count = hf_imu.inWaiting()
         if buff_count > 0:
@@ -227,33 +196,30 @@ def update_plot(frame, hf_imu, ax_3d, ax_plot):
     except Exception as e:
         print("IMU 读取错误:", e)
         return
-    
-    # Update model rotation based on Euler angles
+
     update_model_rotation()
-    
-    # Clear and redraw the 3D model
     ax_3d.clear()
     create_3d_model(ax_3d)
-    
-    # 繪製折線圖
+
     ax_plot.clear()
-    ax_plot.plot(angle_history["time"], angle_history["pitch"], label="Pitch", color="blue")
-    ax_plot.plot(angle_history["time"], angle_history["roll"], label="Roll", color="green")
-    ax_plot.plot(angle_history["time"], angle_history["yaw"], label="Yaw", color="red")
+    window = 50
+    ax_plot.plot(angle_history["time"][-window:], angle_history["pitch"][-window:], label="Pitch", color="blue")
+    ax_plot.plot(angle_history["time"][-window:], angle_history["roll"][-window:], label="Roll", color="green")
+    ax_plot.plot(angle_history["time"][-window:], angle_history["yaw"][-window:], label="Yaw", color="red")
+
     ax_plot.set_title("Euler Angles Over Time")
     ax_plot.set_xlabel("Frame")
     ax_plot.set_ylabel("Angle (degrees)")
     ax_plot.legend()
     ax_plot.grid(True)
 
-    # Print current rotation angles
     print(f"歐拉角 (roll,pitch,yaw): {model_rotation[0]:.1f}, {model_rotation[1]:.1f}, {model_rotation[2]:.1f}")
 
 def main():
     global model_rotation
-    
+
     find_ttyUSB()
-    port = "com7"
+    port = "/dev/ttyUSB0"
     baudrate = 921600
 
     try:
@@ -268,13 +234,11 @@ def main():
         print("\033[31m串口打开失败\033[0m")
         exit(0)
 
-    # Set up the 3D plot and the plot for Euler angles
     fig = plt.figure(figsize=(14, 6))
     gs = fig.add_gridspec(1, 2, width_ratios=[1, 1])
-    ax_3d = fig.add_subplot(gs[0], projection='3d')  # 3D 模型
-    ax_plot = fig.add_subplot(gs[1])                # 折線圖
-    
-    # Start animation
+    ax_3d = fig.add_subplot(gs[0], projection='3d')
+    ax_plot = fig.add_subplot(gs[1])
+
     ani = FuncAnimation(fig, update_plot, fargs=(hf_imu, ax_3d, ax_plot), interval=50)
     plt.show()
 
