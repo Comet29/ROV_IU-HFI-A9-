@@ -185,16 +185,16 @@ def create_3d_model(ax):
     ax.set_ylim([-20, 20])
     ax.set_zlim([-10, 30])
     ax.set_xlabel('pitch')
-    ax.set_ylabel('roll')
-    ax.set_zlabel('yaw')
+    ax.set_ylabel('rollyaw')
+    ax.set_zlabel('roll')
     ax.set_title('IMU 3D Model')
 
 def update_model_rotation():
     global model_rotation, angle_degree
     # Use the IMU-provided Euler angles directly
-    model_rotation[0] = angle_degree[1]
-    model_rotation[1] = -angle_degree[0]
-    model_rotation[2] = -angle_degree[2]
+    model_rotation[0] = angle_degree[1] #pitch
+    model_rotation[1] = angle_degree[0] #roll
+    model_rotation[2] = -angle_degree[2] #yaw
 
 def update_plot(frame, hf_imu, ax):
     # Read IMU data
@@ -216,7 +216,7 @@ def update_plot(frame, hf_imu, ax):
     create_3d_model(ax)
     
     # Print current rotation angles
-    print(f"歐拉角 (roll,pitch,yaw): {model_rotation[0]:.1f}, {model_rotation[1]:.1f}, {model_rotation[2]:.1f}")
+    print(f"歐拉角 (pitch,roll,yaw): {model_rotation[0]:.1f}, {model_rotation[1]:.1f}, {model_rotation[2]:.1f}")
 
 def main():
     global model_rotation
