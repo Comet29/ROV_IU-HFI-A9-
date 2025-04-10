@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding:utf-8 -*-
 import serial
 import struct
 import platform
@@ -104,7 +102,9 @@ def draw_cylinder(ax, center, radius, height, color='r'):
     x = np.linspace(center[0] - radius, center[0] + radius, 30)
     z = np.linspace(center[2], center[2] + height, 2)
     X, Z = np.meshgrid(x, z)
-    Y = np.sqrt(radius**2 - (X - center[0])**2) + center[1]
+    diff = radius**2 - (X - center[0])**2
+    diff = np.maximum(0, diff)  # Ensure non-negative values
+    Y = np.sqrt(diff) + center[1]
     
     ax.plot_surface(X, Y, Z, color=color, alpha=0.5)
     ax.plot_surface(X, -Y + 2*center[1], Z, color=color, alpha=0.5)
@@ -187,15 +187,14 @@ def create_3d_model(ax):
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
     ax.set_zlabel('Z')
-    ax.set_title('IMU 3D Model (角速度控制)')
+    ax.set_title('IMU 3D Model')
 
-def update_rotation():
-    global model_rotation, angularVelocity
-    # Update rotation based on angular velocity (scaled for visualization)
-    rotation_speed = 2.0  # Scaling factor for better visualization
-    model_rotation[0] += angularVelocity[0] * rotation_speed
-    model_rotation[1] += angularVelocity[1] * rotation_speed
-    model_rotation[2] += angularVelocity[2] * rotation_speed
+def update_model_rotation():
+    global model_rotation, angle_degree
+    # Use the IMU-provided Euler angles directly
+    model_rotation[0] = angle_degree[0]
+    model_rotation[1] = angle_degree[1]
+    model_rotation[2] = angle_degree[2]
 
 def update_plot(frame, hf_imu, ax):
     # Read IMU data
@@ -209,8 +208,8 @@ def update_plot(frame, hf_imu, ax):
         print("IMU 读取错误:", e)
         return
     
-    # Update model rotation based on angular velocity
-    update_rotation()
+    # Update model rotation based on Euler angles
+    update_model_rotation()
     
     # Clear and redraw the 3D model
     ax.clear()
@@ -223,7 +222,7 @@ def main():
     global model_rotation
     
     find_ttyUSB()
-    port = "/dev/ttyUSB0"
+    port = "/com7"
     baudrate = 921600
 
     try:
