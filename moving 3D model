@@ -112,8 +112,8 @@ def draw_cylinder(ax, center, radius, height, color='r'):
 def create_3d_model(ax):
     # Create rotation matrix from current angles
     angles_rad = np.radians(model_rotation)
-    rx = angles_rad[0]
-    ry = angles_rad[1]
+    rx = angles_rad[1]
+    ry = angles_rad[0]
     rz = angles_rad[2]
     
     # Rotation matrices
