@@ -1,72 +1,163 @@
-#!/usr/bin/env python3
 import serial
-import platform
 import struct
+import platform
+import serial.tools.list_ports
+import math
 import matplotlib.pyplot as plt
-import matplotlib.animation as animation
-from mpl_toolkits.mplot3d import Axes3D, art3d
+from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import numpy as np
-import math
+from matplotlib.animation import FuncAnimation
 
-def read_serial_data(ser):
-    """
-    Reads a line from the serial port and tries to parse it as three floats.
-    """
-    try:
-        raw_line = ser.readline()
-        if len(raw_line) >= 12:
-            imu_values = struct.unpack('<3f', raw_line[:12])
-            return imu_values
-    except Exception as e:
-        print("Error parsing binary data:", e)
-    return None
+# Global variables for IMU data
+key = 0
+buff = {}
+angularVelocity = [0, 0, 0]
+acceleration = [0, 0, 0]
+magnetometer = [0, 0, 0]
+angle_degree = [0, 0, 0]
+pub_flag = [True, True]
+python_version = platform.python_version()[0]
 
-def format_imu_data(value):
-    """
-    Formats the IMU data to the specified output format.
-    """
-    float_val = float(value)
-    if 'e' in value:
-        base, exponent = value.split('e')
-        base = float(base)
-        return f"{base:.2f}"
+# 3D Model parameters
+model_rotation = [0, 0, 0]  # Current rotation angles in degrees
+
+# 儲存角度的歷史資料
+angle_history = {
+    "pitch": [],
+    "roll": [],
+    "yaw": [],
+    "time": []
+}
+
+def find_ttyUSB():
+    print('imu 默认串口为 /dev/ttyUSB0, 若识别多个串口设备, 请在 launch 文件中修改 imu 对应的串口')
+    posts = [port.device for port in serial.tools.list_ports.comports() if 'USB' in port.device]
+    print('当前电脑所连接的 {} 串口设备共 {} 个: {}'.format('USB', len(posts), posts))
+
+def checkSum(list_data, check_data):
+    data = bytearray(list_data)
+    crc = 0xFFFF
+    for pos in data:
+        crc ^= pos
+        for i in range(8):
+            if (crc & 1) != 0:
+                crc >>= 1
+                crc ^= 0xA001
+            else:
+                crc >>= 1
+    return hex(((crc & 0xff) << 8) + (crc >> 8)) == hex(check_data[0] << 8 | check_data[1])
+
+def hex_to_ieee(raw_data):
+    ieee_data = []
+    raw_data.reverse()
+    for i in range(0, len(raw_data), 4):
+        data2str = hex(raw_data[i] | 0xff00)[4:6] + hex(raw_data[i + 1] | 0xff00)[4:6] + hex(raw_data[i + 2] | 0xff00)[4:6] + hex(raw_data[i + 3] | 0xff00)[4:6]
+        ieee_data.append(struct.unpack('>f', bytes.fromhex(data2str))[0])
+    ieee_data.reverse()
+    return ieee_data
+
+def handleSerialData(raw_data):
+    global buff, key, angle_degree, magnetometer, acceleration, angularVelocity, pub_flag
+    
+    if python_version == '3':
+        buff[key] = raw_data
+
+    key += 1
+    if buff[0] != 0xaa:
+        key = 0
+        return
+    if key < 3:
+        return
+    if buff[1] != 0x55:
+        key = 0
+        return
+    if key < buff[2] + 5:
+        return
+
     else:
-        return f"{float_val:.2f}"
+        data_buff = list(buff.values())
+
+        if buff[2] == 0x2c and pub_flag[0]:
+            if checkSum(data_buff[2:47], data_buff[47:49]):
+                data = hex_to_ieee(data_buff[7:47])
+                angularVelocity = data[1:4]
+                acceleration = data[4:7]
+                magnetometer = data[7:10]
+            else:
+                print('校验失败')
+            pub_flag[0] = False
+        elif buff[2] == 0x14 and pub_flag[1]:
+            if checkSum(data_buff[2:23], data_buff[23:25]):
+                data = hex_to_ieee(data_buff[7:23])
+                angle_degree = data[1:4]
+            else:
+                print('校验失败')
+            pub_flag[1] = False
+        else:
+            print("该数据处理类没有提供该 " + str(buff[2]) + " 的解析")
+            print("或数据错误")
+            buff = {}
+            key = 0
+
+        buff = {}
+        key = 0
+        if pub_flag[0] == True or pub_flag[1] == True:
+            return
+        pub_flag[0] = pub_flag[1] = True
 
 def draw_cylinder(ax, center, radius, height, color='r'):
-    """
-    Draw a cylinder with the given center, radius, and height.
-    """
     x = np.linspace(center[0] - radius, center[0] + radius, 30)
     z = np.linspace(center[2], center[2] + height, 2)
     X, Z = np.meshgrid(x, z)
-    Y = np.sqrt(radius**2 - (X - center[0])**2) + center[1]
+    diff = radius**2 - (X - center[0])**2
+    diff = np.maximum(0, diff)  # Ensure non-negative values
+    Y = np.sqrt(diff) + center[1]
     
     ax.plot_surface(X, Y, Z, color=color, alpha=0.5)
     ax.plot_surface(X, -Y + 2*center[1], Z, color=color, alpha=0.5)
 
-def create_3d_model(ax, imu_x=0, imu_y=0, imu_z=0):
-    """
-    Creates a 3D model of a rectangle connected to six cylinders and moves it based on IMU values.
-    """
+def create_3d_model(ax):
+    # Create rotation matrix from current angles
+    angles_rad = np.radians(model_rotation)
+    rx = angles_rad[0]
+    ry = angles_rad[1]
+    rz = angles_rad[2]
+    
+    # Rotation matrices
+    rot_x = np.array([[1, 0, 0],
+                     [0, np.cos(rx), -np.sin(rx)],
+                     [0, np.sin(rx), np.cos(rx)]])
+    
+    rot_y = np.array([[np.cos(ry), 0, np.sin(ry)],
+                     [0, 1, 0],
+                     [-np.sin(ry), 0, np.cos(ry)]])
+    
+    rot_z = np.array([[np.cos(rz), -np.sin(rz), 0],
+                     [np.sin(rz), np.cos(rz), 0],
+                     [0, 0, 1]])
+    
+    # Combined rotation
+    rotation_matrix = rot_z @ rot_y @ rot_x
+
     # Create the rectangle vertices
     length, width, height = 10, 20, 10
-    vertices = [
-        [5 + imu_x, 10 + imu_y, 0 + imu_z], [-5 + imu_x, 10 + imu_y, 0 + imu_z], 
-        [-5 + imu_x, -10 + imu_y, 0 + imu_z], [5 + imu_x, -10 + imu_y, 0 + imu_z],
-        [5 + imu_x, 10 + imu_y, height + imu_z], [-5 + imu_x, 10 + imu_y, height + imu_z], 
-        [-5 + imu_x, -10 + imu_y, height + imu_z], [5 + imu_x, -10 + imu_y, height + imu_z]
-    ]
+    vertices = np.array([
+        [5, 10, 0], [-5, 10, 0], [-5, -10, 0], [5, -10, 0],
+        [5, 10, height], [-5, 10, height], [-5, -10, height], [5, -10, height]
+    ])
+    
+    # Apply rotation
+    rotated_vertices = np.dot(vertices, rotation_matrix.T)
     
     # Create the sides of the rectangle
     faces = [
-        [vertices[j] for j in [0, 1, 2, 3]],  # bottom face
-        [vertices[j] for j in [4, 5, 6, 7]],  # top face
-        [vertices[j] for j in [0, 1, 5, 4]],  # front face
-        [vertices[j] for j in [2, 3, 7, 6]],  # back face
-        [vertices[j] for j in [1, 2, 6, 5]],  # left face
-        [vertices[j] for j in [0, 3, 7, 4]]   # right face
+        [rotated_vertices[j] for j in [0, 1, 2, 3]],  # bottom face
+        [rotated_vertices[j] for j in [4, 5, 6, 7]],  # top face
+        [rotated_vertices[j] for j in [0, 1, 5, 4]],  # front face
+        [rotated_vertices[j] for j in [2, 3, 7, 6]],  # back face
+        [rotated_vertices[j] for j in [1, 2, 6, 5]],  # left face
+        [rotated_vertices[j] for j in [0, 3, 7, 4]]   # right face
     ]
 
     ax.add_collection3d(Poly3DCollection(faces, facecolors='cyan', linewidths=1, edgecolors='r', alpha=0.25))
@@ -75,90 +166,119 @@ def create_3d_model(ax, imu_x=0, imu_y=0, imu_z=0):
     radius = 2
     cylinder_height = 10
     cylinders = [
-        ([-5 + imu_x, 10 + imu_y, 0 + imu_z], radius, cylinder_height),  # top-left
-        ([-5 + imu_x, 0 + imu_y, 0 + imu_z], radius, cylinder_height),   # left
-        ([-5 + imu_x, -10 + imu_y, 0 + imu_z], radius, cylinder_height), # bottom-left
-        ([5 + imu_x, 10 + imu_y, 0 + imu_z], radius, cylinder_height),   # top-right
-        ([5 + imu_x, 0 + imu_y, 0 + imu_z], radius, cylinder_height),    # right
-        ([5 + imu_x, -10 + imu_y, 0 + imu_z], radius, cylinder_height)   # bottom-right
+        ([-5, 10, 0], radius, cylinder_height),  # top-left
+        ([-5, 0, 0], radius, cylinder_height),   # left
+        ([-5, -10, 0], radius, cylinder_height), # bottom-left
+        ([5, 10, 0], radius, cylinder_height),   # top-right
+        ([5, 0, 0], radius, cylinder_height),    # right
+        ([5, -10, 0], radius, cylinder_height)   # bottom-right
     ]
     
     for center, radius, height in cylinders:
-        draw_cylinder(ax, center, radius, height, color='r')
+        # Apply rotation to cylinder centers
+        rotated_center = np.dot(center, rotation_matrix.T)
+        draw_cylinder(ax, rotated_center, radius, height, color='r')
     
-    # Create the X, Y, Z axes
-    ax.quiver(0, 0, 0, 1, 0, 0, color='r', arrow_length_ratio=0.1)
-    ax.quiver(0, 0, 0, 0, 1, 0, color='g', arrow_length_ratio=0.1)
-    ax.quiver(0, 0, 0, 0, 0, 1, color='b', arrow_length_ratio=0.1)
+    # Create the X, Y, Z axes (rotated)
+    axis_length = 15
+    axes = np.array([[axis_length, 0, 0], [0, axis_length, 0], [0, 0, axis_length]])
+    rotated_axes = np.dot(axes, rotation_matrix.T)
+    
+    ax.quiver(0, 0, 0, rotated_axes[0,0], rotated_axes[0,1], rotated_axes[0,2], color='r', arrow_length_ratio=0.1)
+    ax.quiver(0, 0, 0, rotated_axes[1,0], rotated_axes[1,1], rotated_axes[1,2], color='g', arrow_length_ratio=0.1)
+    ax.quiver(0, 0, 0, rotated_axes[2,0], rotated_axes[2,1], rotated_axes[2,2], color='b', arrow_length_ratio=0.1)
     
     # Set the limits and labels
-    ax.set_xlim([-15, 15])
-    ax.set_ylim([-15, 15])
-    ax.set_zlim([0, 20])
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
+    ax.set_xlim([-20, 20])
+    ax.set_ylim([-20, 20])
+    ax.set_zlim([-10, 30])
+    ax.set_xlabel('roll ')
+    ax.set_ylabel('pitch')
+    ax.set_zlabel('yaw')
+    ax.set_title('IMU 3D Model')
+
+def update_model_rotation():
+    global model_rotation, angle_degree
+    # Use the IMU-provided Euler angles directly
+    model_rotation[0] = angle_degree[1] # pitch
+    model_rotation[1] = angle_degree[0]  # roll
+    model_rotation[2] = -angle_degree[2] # yaw
+
+    # 加入角度歷史記錄
+    angle_history["pitch"].append(angle_degree[1])
+    angle_history["roll"].append(angle_degree[0])
+    angle_history["yaw"].append(angle_degree[2])
+    angle_history["time"].append(len(angle_history["time"]))
+    
+    # 限制最多顯示 100 筆
+    max_len = 100
+    for key in angle_history:
+        if len(angle_history[key]) > max_len:
+            angle_history[key] = angle_history[key][-max_len:]
+
+def update_plot(frame, hf_imu, ax_3d, ax_plot):
+    # Read IMU data
+    try:
+        buff_count = hf_imu.inWaiting()
+        if buff_count > 0:
+            buff_data = hf_imu.read(buff_count)
+            for i in range(0, buff_count):
+                handleSerialData(buff_data[i])
+    except Exception as e:
+        print("IMU 读取错误:", e)
+        return
+    
+    # Update model rotation based on Euler angles
+    update_model_rotation()
+    
+    # Clear and redraw the 3D model
+    ax_3d.clear()
+    create_3d_model(ax_3d)
+    
+    # 繪製折線圖
+    ax_plot.clear()
+    ax_plot.plot(angle_history["time"], angle_history["pitch"], label="Pitch", color="blue")
+    ax_plot.plot(angle_history["time"], angle_history["roll"], label="Roll", color="green")
+    ax_plot.plot(angle_history["time"], angle_history["yaw"], label="Yaw", color="red")
+    ax_plot.set_title("Euler Angles Over Time")
+    ax_plot.set_xlabel("Frame")
+    ax_plot.set_ylabel("Angle (degrees)")
+    ax_plot.legend()
+    ax_plot.grid(True)
+
+    # Print current rotation angles
+    print(f"歐拉角 (roll,pitch,yaw): {model_rotation[0]:.1f}, {model_rotation[1]:.1f}, {model_rotation[2]:.1f}")
 
 def main():
-    python_version = platform.python_version()[0]
-    print("Using Python version:", python_version)
-
-    port = "/dev/ttyUSB0"  # Update if needed
-    baudrate = 921600      # Verify this with your device's documentation
+    global model_rotation
+    
+    find_ttyUSB()
+    port = "com7"
+    baudrate = 921600
 
     try:
-        ser = serial.Serial(port, baudrate, timeout=1)
-        print(f"Connected to {port} at {baudrate} baud")
-
-        fig = plt.figure()
-        ax_imu = fig.add_subplot(121)
-        ax_3d = fig.add_subplot(122, projection='3d')
-
-        imu_x_data, imu_y_data, imu_z_data = [], [], []
-
-        def animate(i):
-            imu_values = read_serial_data(ser)
-            if imu_values:
-                formatted_imu_values = [format_imu_data(f"{value:.2e}") for value in imu_values]
-                print("Parsed IMU Data:", formatted_imu_values)
-                imu_x, imu_y, imu_z = map(float, formatted_imu_values)
-                
-                # Check for nan values
-                imu_x = 0 if math.isnan(imu_x) else imu_x
-                imu_y = 0 if math.isnan(imu_y) else imu_y
-                imu_z = 0 if math.isnan(imu_z) else imu_z
-
-                imu_x_data.append(imu_x)
-                imu_y_data.append(imu_y)
-                imu_z_data.append(imu_z)
-
-                if len(imu_x_data) > 100:  # Keep last 100 data points
-                    imu_x_data.pop(0)
-                    imu_y_data.pop(0)
-                    imu_z_data.pop(0)
-
-                ax_imu.clear()
-                ax_imu.plot(imu_x_data, label='IMU X')
-                ax_imu.plot(imu_y_data, label='IMU Y')
-                ax_imu.plot(imu_z_data, label='IMU Z')
-                ax_imu.legend(loc='upper right')
-                ax_imu.set_title('Real-Time IMU Data')
-                ax_imu.set_xlabel('Time')
-                ax_imu.set_ylabel('IMU Values')
-                ax_imu.set_ylim([-10, 10])  # Adjust y-axis range for better visualization
-
-                ax_3d.clear()
-                create_3d_model(ax_3d, imu_x, imu_y, imu_z)
-
-        ani = animation.FuncAnimation(fig, animate, interval=100)
-        plt.show()
-
+        hf_imu = serial.Serial(port=port, baudrate=baudrate, timeout=0.5)
+        if hf_imu.isOpen():
+            print("\033[32m串口打开成功...\033[0m")
+        else:
+            hf_imu.open()
+            print("\033[32m打开串口成功...\033[0m")
     except Exception as e:
-        print("Error:", e)
-    finally:
-        if 'ser' in locals() and ser.is_open:
-            ser.close()
-            print("Serial port closed.")
+        print(e)
+        print("\033[31m串口打开失败\033[0m")
+        exit(0)
+
+    # Set up the 3D plot and the plot for Euler angles
+    fig = plt.figure(figsize=(14, 6))
+    gs = fig.add_gridspec(1, 2, width_ratios=[1, 1])
+    ax_3d = fig.add_subplot(gs[0], projection='3d')  # 3D 模型
+    ax_plot = fig.add_subplot(gs[1])                # 折線圖
+    
+    # Start animation
+    ani = FuncAnimation(fig, update_plot, fargs=(hf_imu, ax_3d, ax_plot), interval=50)
+    plt.show()
+
+    hf_imu.close()
 
 if __name__ == "__main__":
     main()
