@@ -283,11 +283,11 @@ def main():
 
     # Create figure with 3 subplots
     fig = plt.figure(figsize=(18, 6))
-    gs = fig.add_gridspec(1, 3, width_ratios=[1, 1, 0.7])
+    gs = fig.add_gridspec(1, 3, width_ratios=[0.7, 1, 1])  # Adjust ratios for new layout
     
-    ax_3d = fig.add_subplot(gs[0], projection='3d')
-    ax_plot = fig.add_subplot(gs[1])
-    ax_data = fig.add_subplot(gs[2])
+    ax_data = fig.add_subplot(gs[0])  # IMU data display on the left
+    ax_plot = fig.add_subplot(gs[1])  # Euler angle plots in the center
+    ax_3d = fig.add_subplot(gs[2], projection='3d')  # 3D model on the right
     
     # Create data display area
     text_box = create_data_display(ax_data)
